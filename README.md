@@ -1,4 +1,4 @@
-# AWS Serverless POC
+# AWS Serverless web backend POC
 
 ## Overview
 
