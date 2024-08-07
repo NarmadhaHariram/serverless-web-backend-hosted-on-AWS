@@ -1,0 +1,211 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Infrastructure for POC using Lambda, SQS, DynamoDB, SNS, and API Gateway
+
+Parameters:
+  Email:
+    Type: String
+    Description: Email address for SNS notifications
+
+Resources:
+  # DynamoDB Table
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: orders
+      AttributeDefinitions:
+        - AttributeName: orderID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: orderID
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  # SQS Queue
+  POCQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: POC-Queue
+
+  # SNS Topic
+  POCTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: POC-Topic
+
+  # Lambda Execution Roles
+  LambdaSQSDynamoDBRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: Lambda-SQS-DynamoDB
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: Lambda-SQS-DynamoDB-Policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:DescribeTable
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - sqs:DeleteMessage
+                  - sqs:ReceiveMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: "*"
+
+  LambdaDynamoDBStreamsSNSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: Lambda-DynamoDBStreams-SNS
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: Lambda-DynamoDBStreams-SNS-Policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                  - sns:GetTopicAttributes
+                  - sns:ListTopics
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetShardIterator
+                  - dynamodb:DescribeStream
+                  - dynamodb:ListStreams
+                  - dynamodb:GetRecords
+                Resource: "*"
+
+  APIGatewaySQSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: APIGateway-SQS
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: APIGateway-SQS-Policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  # Lambda Functions
+  POCLambda1:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: POC-Lambda-1
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaSQSDynamoDBRole.Arn
+      Code:
+        S3Bucket: YOUR_S3_BUCKET_NAME
+        S3Key: lambda_code/poc_lambda_1.zip
+      Runtime: python3.9
+      Timeout: 60
+
+  POCLambda2:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: POC-Lambda-2
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaDynamoDBStreamsSNSRole.Arn
+      Code:
+        S3Bucket: YOUR_S3_BUCKET_NAME
+        S3Key: lambda_code/poc_lambda_2.zip
+      Runtime: python3.9
+      Timeout: 60
+
+  # Lambda Triggers
+  SQSTrigger:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 10
+      EventSourceArn: !GetAtt POCQueue.Arn
+      FunctionName: !GetAtt POCLambda1.Arn
+      Enabled: 'true'
+
+  DynamoDBStreamTrigger:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 5
+      EventSourceArn: !GetAtt OrdersTable.StreamArn
+      FunctionName: !GetAtt POCLambda2.Arn
+      StartingPosition: LATEST
+      Enabled: 'true'
+
+  # API Gateway
+  POCAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: POC-API
+
+  POSTMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !GetAtt POCAPI.RootResourceId
+      RestApiId: !Ref POCAPI
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:sqs:path/${POCQueue.Arn}
+        Credentials: !GetAtt APIGatewaySQSRole.Arn
+      MethodResponses:
+        - StatusCode: 200
+
+  # SNS Subscription
+  SNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      Endpoint: !Ref Email
+      TopicArn: !Ref POCTopic
+
+Outputs:
+  OrdersTableName:
+    Value: !Ref OrdersTable
+    Description: "Name of the DynamoDB table"
+  
+  POCQueueURL:
+    Value: !Ref POCQueue
+    Description: "URL of the SQS Queue"
+  
+  POCTopicArn:
+    Value: !Ref POCTopic
+    Description: "ARN of the SNS Topic"
+  
+  POCAPIEndpoint:
+    Value: !Sub "https://${POCAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/"
+    Description: "URL of the API Gateway"
