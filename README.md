@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project demonstrates a serverless architecture using AWS services:
+This project demonstrates a serverless architecture using AWS services with Cloudformation:
 - **DynamoDB** for data storage
 - **SQS** for queuing messages
 - **Lambda** for processing
